@@ -45,6 +45,7 @@ app-example
 # Supabase Local
 /supabase/.temp/
 /supabase/.branch/
+supabase.tar.gz
 
 # Editor swap / backup files
 *.swp
