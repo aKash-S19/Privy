@@ -2,6 +2,8 @@
 
 A private, end-to-end encrypted messaging app built with Expo (React Native) and Supabase.
 
+Contribution note: land small docs/chore updates on main regularly to keep the GitHub contribution graph active (green).
+
 ---
 
 ## Changelog
