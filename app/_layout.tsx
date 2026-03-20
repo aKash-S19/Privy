@@ -114,6 +114,15 @@ function AppShell() {
             detachPreviousScreen: false,
           }}
         />
+        <Stack.Screen
+          name="group/[id]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            contentStyle: { backgroundColor: bg },
+            detachPreviousScreen: false,
+          }}
+        />
       </Stack>
       <StatusBar style={dk ? 'light' : 'dark'} />
     </ThemeProvider>

@@ -50,6 +50,49 @@ export interface ChatRow {
   last_message_at: string;
 }
 
+export interface GroupRow {
+  id: string;
+  name: string;
+  role: 'member' | 'admin' | 'super_admin';
+  announcement_mode: boolean;
+  invite_requires_approval: boolean;
+  restrict_forwarding: boolean;
+  key_version: number;
+  created_by: string;
+  joined_at: string;
+  unread_count: number;
+  last_message: {
+    id: string;
+    sender_id: string;
+    msg_type: 'text' | 'image' | 'video' | 'file' | 'voice';
+    created_at: string;
+  } | null;
+  last_message_at: string;
+}
+
+export interface GroupMemberRow {
+  group_id: string;
+  user_id: string;
+  role: 'member' | 'admin' | 'super_admin';
+  muted_until?: string | null;
+  joined_at: string;
+  user: { id: string; username: string; avatar_url?: string | null; public_key?: string | null };
+}
+
+export interface GroupMessage {
+  id: string;
+  group_id: string;
+  sender_id: string;
+  encrypted_body: string;
+  key_version: number;
+  msg_type: 'text' | 'image' | 'video' | 'file' | 'voice';
+  file_name?: string | null;
+  file_size?: number | null;
+  mime_type?: string | null;
+  forwarded_from?: string | null;
+  created_at: string;
+}
+
 interface AuthContextType {
   /** 'boot' = splash/loading, 'unauthenticated', 'authenticated' */
   status:         'boot' | 'unauthenticated' | 'authenticated';
@@ -77,6 +120,23 @@ interface AuthContextType {
   deleteChat:        (chatId: string) => Promise<void>;
   openChat:          (peerId: string) => Promise<{ chatId: string; peerPublicKey: string | null }>;
   removeFriend:      (peerId: string) => Promise<void>;
+  listGroups:        () => Promise<GroupRow[]>;
+  createGroup:       (name: string, memberIds: string[], keyEnvelopes?: Record<string, string>, inviteRequiresApproval?: boolean) => Promise<GroupRow>;
+  getGroupState:     (groupId: string) => Promise<{ group: GroupRow; me: { role: GroupMemberRow['role'] }; encryptedGroupKey: string | null }>;
+  listGroupMembers:  (groupId: string) => Promise<GroupMemberRow[]>;
+  addGroupMember:    (groupId: string, targetUserId: string, encryptedGroupKey?: string) => Promise<void>;
+  updateGroupMember: (groupId: string, targetUserId: string, operation: 'set-role' | 'mute' | 'kick' | 'ban', extras?: { role?: 'member' | 'admin'; muteUntil?: string | null; reason?: string }) => Promise<void>;
+  setGroupSettings:  (groupId: string, patch: { announcementMode?: boolean; inviteRequiresApproval?: boolean; restrictForwarding?: boolean }) => Promise<void>;
+  createGroupInvite: (groupId: string, expiresInHours?: number, maxUses?: number | null) => Promise<{ invite_token: string; expires_at: string | null }>;
+  joinGroupViaInvite:(inviteToken: string) => Promise<{ pending: boolean; groupId?: string }>;
+  getGroupJoinRequests: (groupId: string) => Promise<Array<{ id: string; requester_id: string; requested_at: string; user: { id: string; username: string; avatar_url?: string | null } }>>;
+  resolveGroupJoinRequest: (requestId: string, approve: boolean) => Promise<void>;
+  rotateGroupKey:    (groupId: string, keyEnvelopes: Record<string, string>, reason?: string) => Promise<number>;
+  sendGroupMessage:  (groupId: string, encryptedBody: string, keyVersion: number, msgType?: GroupMessage['msg_type'], fileMeta?: { fileName?: string; fileSize?: number; mimeType?: string }, forwardedFrom?: string | null) => Promise<GroupMessage>;
+  getGroupMessages:  (groupId: string, before?: string) => Promise<GroupMessage[]>;
+  setGroupTyping:    (groupId: string, isTyping: boolean) => Promise<void>;
+  setGroupReceipt:   (groupId: string, messageId: string, status: 'delivered' | 'seen') => Promise<void>;
+  reportGroupUser:   (groupId: string, reportedUserId: string, reason: string, messageId?: string | null) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
@@ -292,6 +352,156 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await callAuthFunction({ action: 'remove-friend', sessionToken, peerId });
   }, [sessionToken]);
 
+  const listGroups = useCallback(async (): Promise<GroupRow[]> => {
+    if (!sessionToken) return [];
+    const res = await callAuthFunction({ action: 'list-groups', sessionToken });
+    return (res.groups ?? []) as GroupRow[];
+  }, [sessionToken]);
+
+  const createGroup = useCallback(async (
+    name: string,
+    memberIds: string[],
+    keyEnvelopes: Record<string, string> = {},
+    inviteRequiresApproval = false,
+  ): Promise<GroupRow> => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({
+      action: 'create-group',
+      sessionToken,
+      name,
+      memberIds,
+      keyEnvelopes,
+      inviteRequiresApproval,
+    });
+    return res.group as GroupRow;
+  }, [sessionToken]);
+
+  const getGroupState = useCallback(async (groupId: string) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({ action: 'get-group-state', sessionToken, groupId });
+    return {
+      group: res.group as GroupRow,
+      me: res.me as { role: GroupMemberRow['role'] },
+      encryptedGroupKey: (res.encryptedGroupKey as string | null) ?? null,
+    };
+  }, [sessionToken]);
+
+  const listGroupMembers = useCallback(async (groupId: string): Promise<GroupMemberRow[]> => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({ action: 'list-group-members', sessionToken, groupId });
+    return (res.members ?? []) as GroupMemberRow[];
+  }, [sessionToken]);
+
+  const addGroupMember = useCallback(async (groupId: string, targetUserId: string, encryptedGroupKey?: string) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    await callAuthFunction({ action: 'add-group-member', sessionToken, groupId, targetUserId, encryptedGroupKey });
+  }, [sessionToken]);
+
+  const updateGroupMember = useCallback(async (
+    groupId: string,
+    targetUserId: string,
+    operation: 'set-role' | 'mute' | 'kick' | 'ban',
+    extras: { role?: 'member' | 'admin'; muteUntil?: string | null; reason?: string } = {},
+  ) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    await callAuthFunction({
+      action: 'update-group-member',
+      sessionToken,
+      groupId,
+      targetUserId,
+      operation,
+      role: extras.role,
+      muteUntil: extras.muteUntil,
+      reason: extras.reason,
+    });
+  }, [sessionToken]);
+
+  const setGroupSettings = useCallback(async (
+    groupId: string,
+    patch: { announcementMode?: boolean; inviteRequiresApproval?: boolean; restrictForwarding?: boolean },
+  ) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    await callAuthFunction({ action: 'set-group-settings', sessionToken, groupId, ...patch });
+  }, [sessionToken]);
+
+  const createGroupInvite = useCallback(async (
+    groupId: string,
+    expiresInHours = 72,
+    maxUses: number | null = null,
+  ) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({ action: 'create-group-invite', sessionToken, groupId, expiresInHours, maxUses });
+    return res.invite as { invite_token: string; expires_at: string | null };
+  }, [sessionToken]);
+
+  const joinGroupViaInvite = useCallback(async (inviteToken: string) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({ action: 'join-group-via-invite', sessionToken, inviteToken });
+    return { pending: Boolean(res.pending), groupId: res.groupId as string | undefined };
+  }, [sessionToken]);
+
+  const getGroupJoinRequests = useCallback(async (groupId: string) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({ action: 'get-group-join-requests', sessionToken, groupId });
+    return (res.requests ?? []) as Array<{ id: string; requester_id: string; requested_at: string; user: { id: string; username: string; avatar_url?: string | null } }>;
+  }, [sessionToken]);
+
+  const resolveGroupJoinRequest = useCallback(async (requestId: string, approve: boolean) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    await callAuthFunction({ action: 'resolve-group-join-request', sessionToken, requestId, approve });
+  }, [sessionToken]);
+
+  const rotateGroupKey = useCallback(async (groupId: string, keyEnvelopes: Record<string, string>, reason = 'manual') => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({ action: 'rotate-group-key', sessionToken, groupId, keyEnvelopes, reason });
+    return Number(res.keyVersion ?? 1);
+  }, [sessionToken]);
+
+  const sendGroupMessage = useCallback(async (
+    groupId: string,
+    encryptedBody: string,
+    keyVersion: number,
+    msgType: GroupMessage['msg_type'] = 'text',
+    fileMeta?: { fileName?: string; fileSize?: number; mimeType?: string },
+    forwardedFrom: string | null = null,
+  ): Promise<GroupMessage> => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    const res = await callAuthFunction({
+      action: 'send-group-message',
+      sessionToken,
+      groupId,
+      encryptedBody,
+      keyVersion,
+      msgType,
+      fileName: fileMeta?.fileName,
+      fileSize: fileMeta?.fileSize,
+      mimeType: fileMeta?.mimeType,
+      forwardedFrom,
+    });
+    return res.message as GroupMessage;
+  }, [sessionToken]);
+
+  const getGroupMessages = useCallback(async (groupId: string, before?: string): Promise<GroupMessage[]> => {
+    if (!sessionToken) return [];
+    const res = await callAuthFunction({ action: 'get-group-messages', sessionToken, groupId, before });
+    return (res.messages ?? []) as GroupMessage[];
+  }, [sessionToken]);
+
+  const setGroupTyping = useCallback(async (groupId: string, isTyping: boolean) => {
+    if (!sessionToken) return;
+    await callAuthFunction({ action: 'set-group-typing', sessionToken, groupId, isTyping });
+  }, [sessionToken]);
+
+  const setGroupReceipt = useCallback(async (groupId: string, messageId: string, status: 'delivered' | 'seen') => {
+    if (!sessionToken) return;
+    await callAuthFunction({ action: 'set-group-receipt', sessionToken, groupId, messageId, status });
+  }, [sessionToken]);
+
+  const reportGroupUser = useCallback(async (groupId: string, reportedUserId: string, reason: string, messageId: string | null = null) => {
+    if (!sessionToken) throw new Error('Not authenticated');
+    await callAuthFunction({ action: 'report-group-user', sessionToken, groupId, reportedUserId, reason, messageId });
+  }, [sessionToken]);
+
   return (
     <AuthContext.Provider value={{
       status, user, deviceUsername, sessionToken,
@@ -299,6 +509,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut, deleteAccount, findUser, checkUsername, updateUser,
       sendFriendRequest, getChats,
       sendMessage, getMessages, markRead, deleteMessage, deleteChat, openChat, removeFriend,
+      listGroups, createGroup, getGroupState, listGroupMembers, addGroupMember, updateGroupMember,
+      setGroupSettings, createGroupInvite, joinGroupViaInvite, getGroupJoinRequests,
+      resolveGroupJoinRequest, rotateGroupKey, sendGroupMessage, getGroupMessages,
+      setGroupTyping, setGroupReceipt, reportGroupUser,
     }}>
       {children}
     </AuthContext.Provider>

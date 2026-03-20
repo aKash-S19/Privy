@@ -56,6 +56,19 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="groups"
+        options={{
+          title: 'Groups',
+          tabBarIcon: ({ color, focused }) => (
+            <MaterialCommunityIcons
+              name={focused ? 'account-group' : 'account-group-outline'}
+              size={26}
+              color={color}
+            />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
