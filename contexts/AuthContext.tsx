@@ -48,6 +48,49 @@ export interface ChatRow {
   last_message_at: string;
 }
 
+export interface GroupRow {
+  id: string;
+  name: string;
+  role: 'member' | 'admin' | 'super_admin';
+  announcement_mode: boolean;
+  invite_requires_approval: boolean;
+  restrict_forwarding: boolean;
+  key_version: number;
+  created_by: string;
+  joined_at: string;
+  unread_count: number;
+  last_message: {
+    id: string;
+    sender_id: string;
+    msg_type: 'text' | 'image' | 'video' | 'file' | 'voice';
+    created_at: string;
+  } | null;
+  last_message_at: string;
+}
+
+export interface GroupMemberRow {
+  group_id: string;
+  user_id: string;
+  role: 'member' | 'admin' | 'super_admin';
+  muted_until?: string | null;
+  joined_at: string;
+  user: { id: string; username: string; avatar_url?: string | null; public_key?: string | null };
+}
+
+export interface GroupMessage {
+  id: string;
+  group_id: string;
+  sender_id: string;
+  encrypted_body: string;
+  key_version: number;
+  msg_type: 'text' | 'image' | 'video' | 'file' | 'voice';
+  file_name?: string | null;
+  file_size?: number | null;
+  mime_type?: string | null;
+  forwarded_from?: string | null;
+  created_at: string;
+}
+
 interface AuthContextType {
   status:         'boot' | 'unauthenticated' | 'authenticated';
   user:           UserInfo | null;

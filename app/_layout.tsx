@@ -26,7 +26,11 @@ import { callAuthFunction } from '@/lib/supabase';
 SplashScreen.preventAutoHideAsync();
 
 export const unstable_settings = {
+<<<<<<< HEAD
   initialRouteName: 'index',
+=======
+  initialRouteName: 'onboarding',
+>>>>>>> 6d6a01c (7.3 work)
 };
 
 // Custom nav themes — override background/card so the navigator canvas
@@ -253,7 +257,10 @@ function AppShell() {
           animation: 'fade',
         }}
       >
+<<<<<<< HEAD
         <Stack.Screen name="index"      options={{ headerShown: false, animation: 'none' }} />
+=======
+>>>>>>> 6d6a01c (7.3 work)
         <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="auth"     options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)"   options={{ headerShown: false }} />
@@ -290,6 +297,15 @@ function AppShell() {
             contentStyle: { backgroundColor: bg },
           }}
         />
+        <Stack.Screen
+          name="group/[id]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            contentStyle: { backgroundColor: bg },
+            detachPreviousScreen: false,
+          }}
+        />
       </Stack>
       <StatusBar style={dk ? 'light' : 'dark'} />
     </ThemeProvider>
@@ -308,6 +324,14 @@ export default function RootLayout() {
   useEffect(() => {
     if (!fontsLoaded) return;
     SplashScreen.hideAsync();
+<<<<<<< HEAD
+=======
+    // Redirect returning users past onboarding
+    SecureStore.getItemAsync(ONBOARDING_KEY).then((val) => {
+      if (val === '1') router.replace('/auth');
+      // else stay on onboarding (default initial route)
+    });
+>>>>>>> 6d6a01c (7.3 work)
   }, [fontsLoaded]);
 
   // Ask for push permission once on first launch and wire up tap-to-open-chat
