@@ -8,17 +8,27 @@ import {
 } from '@expo-google-fonts/inter';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import 'expo-crypto';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, usePathname, useRouter } from 'expo-router';
+import * as ScreenCapture from 'expo-screen-capture';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
-import React, { useEffect } from 'react';
-import { View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Alert, Platform, View } from 'react-native';
 import 'react-native-reanimated';
 
-import { AuthProvider } from '@/contexts/AuthContext';
+import { AuthProvider, useAuth, type ChatRow } from '@/contexts/AuthContext';
 import { SettingsProvider, useSettings } from '@/contexts/SettingsContext';
-import { addNotificationResponseListener, requestNotificationPermission } from '@/lib/notifications';
+import {
+    addNotificationResponseListener,
+    configureNotificationRuntime,
+    getExpoPushToken,
+    getLastNotificationResponseData,
+    requestNotificationPermission,
+    showIncomingCallNotification,
+    showMessageNotification,
+} from '@/lib/notifications';
+import { callAuthFunction } from '@/lib/supabase';
 
 // Keep the splash screen up while fonts load
 SplashScreen.preventAutoHideAsync();
@@ -35,20 +45,366 @@ const LightNavTheme = {
 };
 const DarkNavTheme = {
   ...DarkTheme,
-  colors: { ...DarkTheme.colors, background: '#111827', card: '#1F2937' },
+  colors: { ...DarkTheme.colors, background: '#0B0D10', card: '#14171C' },
 };
+
+interface GroupOverviewRow {
+  id: string;
+  name: string;
+  last_message: {
+    text: string;
+    created_at: string;
+    username: string;
+  } | null;
+}
+
+interface PendingCallOffer {
+  id: string;
+  call_id: string;
+  chat_id: string;
+  from_user_id: string;
+  from_username: string;
+  from_avatar_url: string | null;
+  created_at: string;
+}
+
+const NOTIFICATION_SYNC_MS = 4000;
+const GLOBAL_CALL_POLL_MS = 600;
+const CALL_ACTION_DECLINE = 'CALL_DECLINE';
+
+function getActiveChatTargets(pathname: string): { chatId: string | null; groupId: string | null } {
+  const groupMatch = pathname.match(/^\/chat\/group\/([^/]+)$/);
+  if (groupMatch) {
+    const id = decodeURIComponent(groupMatch[1]);
+    if (!id.startsWith('[')) return { chatId: null, groupId: id };
+  }
+
+  const chatMatch = pathname.match(/^\/chat\/([^/]+)$/);
+  if (chatMatch) {
+    const id = decodeURIComponent(chatMatch[1]);
+    if (!id.startsWith('[')) return { chatId: id, groupId: null };
+  }
+
+  return { chatId: null, groupId: null };
+}
+
+function directPreview(msgType?: string): string {
+  if (msgType === 'image') return 'Photo';
+  if (msgType === 'file') return 'Document';
+  if (msgType === 'voice') return 'Voice message';
+  if (msgType === 'video') return 'Video';
+  return 'New message';
+}
+
+function RealtimeNotificationBridge({ pathname }: { pathname: string }) {
+  const { settings } = useSettings();
+  const { sessionToken, user, getChats } = useAuth();
+
+  const directStateRef = useRef<Record<string, { lastMessageId: string; unreadCount: number }>>({});
+  const groupStateRef = useRef<Record<string, string>>({});
+  const seededRef = useRef(false);
+
+  useEffect(() => {
+    if (!sessionToken || !user?.id) {
+      directStateRef.current = {};
+      groupStateRef.current = {};
+      seededRef.current = false;
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncNotifications = async () => {
+      try {
+        const allowDirect = settings.msgNotifs && !settings.dnd;
+        const allowGroups = allowDirect && !settings.muteGroups;
+
+        const [chatRows, groups] = await Promise.all([
+          getChats().catch(() => [] as ChatRow[]),
+          allowGroups
+            ? callAuthFunction({ action: 'get-groups-overview', sessionToken })
+              .then((res) => (res?.groups ?? []) as GroupOverviewRow[])
+              .catch(() => [] as GroupOverviewRow[])
+            : Promise.resolve([] as GroupOverviewRow[]),
+        ]);
+
+        if (cancelled) return;
+
+        const active = getActiveChatTargets(pathname);
+        const lowerUsername = String(user.username ?? '').toLowerCase();
+
+        const nextDirect: Record<string, { lastMessageId: string; unreadCount: number }> = {};
+        for (const chat of chatRows) {
+          const messageId = String(chat.last_message?.id ?? '');
+          const unreadCount = Number(chat.unread_count ?? 0);
+          const prev = directStateRef.current[chat.chat_id];
+          const fromPeer = !!chat.last_message?.sender_id && chat.last_message.sender_id !== user.id;
+          const unreadIncreased = prev ? unreadCount > prev.unreadCount : false;
+
+          if (
+            seededRef.current &&
+            allowDirect &&
+            fromPeer &&
+            unreadIncreased &&
+            messageId &&
+            active.chatId !== chat.chat_id
+          ) {
+            const preview = `${chat.user.username}: ${directPreview(chat.last_message?.msg_type)}`;
+            void showMessageNotification({
+              senderName: chat.user.username,
+              preview,
+              chatId: chat.chat_id,
+              peerId: chat.user.id,
+              peerName: chat.user.username,
+              peerAvatar: chat.user.avatar_url ?? '',
+              peerKey: chat.peer_public_key ?? '',
+              unreadCount,
+              sentAt: chat.last_message?.created_at ?? '',
+              sound: 'default',
+            });
+          }
+
+          nextDirect[chat.chat_id] = { lastMessageId: messageId, unreadCount };
+        }
+        directStateRef.current = nextDirect;
+
+        const nextGroups: Record<string, string> = {};
+        for (const group of groups) {
+          const stamp = String(group.last_message?.created_at ?? '');
+          const prevStamp = groupStateRef.current[group.id] ?? '';
+          const sender = String(group.last_message?.username ?? '').toLowerCase();
+          const fromOtherMember = !!sender && sender !== lowerUsername;
+
+          if (
+            seededRef.current &&
+            allowGroups &&
+            stamp &&
+            stamp !== prevStamp &&
+            fromOtherMember &&
+            active.groupId !== group.id
+          ) {
+            const body = `${group.last_message?.username ?? 'Someone'}: ${group.last_message?.text ?? 'Encrypted message'}`;
+            void showMessageNotification({
+              senderName: group.last_message?.username ?? group.name,
+              preview: body,
+              chatId: '',
+              peerId: '',
+              peerName: '',
+              groupId: group.id,
+              groupName: group.name,
+              unreadCount: 1,
+              sentAt: stamp,
+              sound: 'default',
+            });
+          }
+
+          nextGroups[group.id] = stamp;
+        }
+        groupStateRef.current = nextGroups;
+
+        seededRef.current = true;
+      } catch {
+        // Keep polling; avoid noisy logs from transient network failures.
+      }
+    };
+
+    syncNotifications();
+    const timer = setInterval(() => {
+      syncNotifications();
+    }, NOTIFICATION_SYNC_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [
+    sessionToken,
+    user?.id,
+    user?.username,
+    getChats,
+    pathname,
+    settings.msgNotifs,
+    settings.dnd,
+    settings.muteGroups,
+  ]);
+
+  return null;
+}
+
+function GlobalCallBridge({ pathname }: { pathname: string }) {
+  const { sessionToken } = useAuth();
+  const router = useRouter();
+  const cursorRef = useRef<string | undefined>(undefined);
+  const handledCallIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!sessionToken) {
+      cursorRef.current = undefined;
+      handledCallIdsRef.current = new Set();
+      return;
+    }
+
+    let cancelled = false;
+
+    const pollIncomingCalls = async () => {
+      try {
+        const res = await callAuthFunction({
+          action: 'get-pending-call-signals',
+          sessionToken,
+          since: cursorRef.current,
+        });
+        const offers = (res?.signals ?? []) as PendingCallOffer[];
+        if (offers.length === 0 || cancelled) return;
+
+        const isDirectChatScreen = /^\/chat\/[^/]+$/.test(pathname);
+        const isCallScreen = pathname.startsWith('/call/');
+
+        for (const offer of offers) {
+          if (!cursorRef.current || new Date(offer.created_at) > new Date(cursorRef.current)) {
+            cursorRef.current = offer.created_at;
+          }
+
+          if (handledCallIdsRef.current.has(offer.call_id)) continue;
+          handledCallIdsRef.current.add(offer.call_id);
+
+          if (cancelled || isCallScreen || isDirectChatScreen) continue;
+
+          void showIncomingCallNotification({
+            chatId: offer.chat_id,
+            callId: offer.call_id,
+            peerId: offer.from_user_id,
+            peerName: offer.from_username || 'Unknown',
+            peerAvatar: offer.from_avatar_url ?? '',
+          });
+
+          Alert.alert(
+            'Incoming call',
+            `${offer.from_username || 'Someone'} is calling you.`,
+            [
+              {
+                text: 'Decline',
+                style: 'destructive',
+                onPress: () => {
+                  void (async () => {
+                    await callAuthFunction({
+                      action: 'ack-call-signals',
+                      signalIds: [offer.id],
+                      sessionToken,
+                    }).catch(() => {});
+                    await callAuthFunction({
+                      action: 'send-call-signal',
+                      chatId: offer.chat_id,
+                      toUserId: offer.from_user_id,
+                      callId: offer.call_id,
+                      signalType: 'decline',
+                      signalPayload: null,
+                      sessionToken,
+                    }).catch(() => {});
+                  })();
+                },
+              },
+              {
+                text: 'Accept',
+                onPress: () => {
+                  router.push({
+                    pathname: '/call/[chatId]' as any,
+                    params: {
+                      chatId: offer.chat_id,
+                      peerId: offer.from_user_id,
+                      peerName: offer.from_username || 'Unknown',
+                      peerAvatar: offer.from_avatar_url ?? '',
+                      incoming: '1',
+                      callId: offer.call_id,
+                    },
+                  });
+                },
+              },
+            ],
+            { cancelable: false },
+          );
+        }
+      } catch {
+        // Keep polling in case of transient failures.
+      }
+    };
+
+    void pollIncomingCalls();
+    const timer = setInterval(() => {
+      if (!cancelled) void pollIncomingCalls();
+    }, GLOBAL_CALL_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [pathname, router, sessionToken]);
+
+  return null;
+}
 
 // Inner shell — can safely consume SettingsContext since it renders inside SettingsProvider
 function AppShell() {
-  const { settings, isLoaded } = useSettings();
+  const { settings, isLoaded, setSyncToken } = useSettings();
+  const { sessionToken } = useAuth();
+  const pathname = usePathname();
   const dk = settings.darkMode;
-  const bg = dk ? '#111827' : '#F4F6F8';
+  const bg = dk ? '#0B0D10' : '#F4F6F8';
 
   // Paint the native window/root-view background immediately so there is
   // never a white frame visible during any JS-driven navigation transition.
   useEffect(() => {
     SystemUI.setBackgroundColorAsync(bg);
   }, [bg]);
+
+  useEffect(() => {
+    setSyncToken(sessionToken ?? null);
+  }, [sessionToken, setSyncToken]);
+
+  useEffect(() => {
+    if (!sessionToken) return;
+
+    let cancelled = false;
+
+    const registerPushToken = async () => {
+      const granted = await requestNotificationPermission();
+      if (!granted || cancelled) return;
+
+      const expoPushToken = await getExpoPushToken();
+      if (!expoPushToken || cancelled) return;
+
+      await callAuthFunction({
+        action: 'register-push-token',
+        sessionToken,
+        expoPushToken,
+        platform: Platform.OS,
+      }).catch((error) => {
+        // Keep app startup resilient if token sync fails.
+        console.warn('[push] token registration failed', error);
+      });
+    };
+
+    registerPushToken();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionToken]);
+
+  useEffect(() => {
+    const canCapture =
+      pathname === '/profile' ||
+      pathname === '/settings' ||
+      pathname.startsWith('/settings/');
+
+    (async () => {
+      try {
+        if (canCapture) await ScreenCapture.allowScreenCaptureAsync();
+        else await ScreenCapture.preventScreenCaptureAsync();
+      } catch {
+        // Best effort only.
+      }
+    })();
+  }, [pathname]);
 
   // Block rendering until SecureStore resolves so we never flash the wrong theme
   if (!isLoaded) {
@@ -59,12 +415,12 @@ function AppShell() {
 
   return (
     <ThemeProvider value={dk ? DarkNavTheme : LightNavTheme}>
+      <RealtimeNotificationBridge pathname={pathname} />
+      <GlobalCallBridge pathname={pathname} />
       <Stack
         screenOptions={{
           contentStyle: { backgroundColor: bg },
           animation: 'fade',
-          // Keep the screen behind alive — prevents the re-attach white flash on pop
-          detachPreviousScreen: false,
         }}
       >
         <Stack.Screen name="index"      options={{ headerShown: false, animation: 'none' }} />
@@ -77,7 +433,6 @@ function AppShell() {
             headerShown: false,
             animation: 'fade',
             contentStyle: { backgroundColor: bg },
-            detachPreviousScreen: false,
           }}
         />
         <Stack.Screen
@@ -87,7 +442,6 @@ function AppShell() {
             presentation: 'card',
             animation: 'fade',
             contentStyle: { backgroundColor: bg },
-            detachPreviousScreen: false,
           }}
         />
         <Stack.Screen
@@ -96,7 +450,30 @@ function AppShell() {
             headerShown: false,
             animation: 'slide_from_right',
             contentStyle: { backgroundColor: bg },
-            detachPreviousScreen: false,
+          }}
+        />
+        <Stack.Screen
+          name="chat/group/[id]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            contentStyle: { backgroundColor: bg },
+          }}
+        />
+        <Stack.Screen
+          name="call/[chatId]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            contentStyle: { backgroundColor: bg },
+          }}
+        />
+        <Stack.Screen
+          name="group/[id]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            contentStyle: { backgroundColor: bg },
           }}
         />
       </Stack>
@@ -113,6 +490,7 @@ export default function RootLayout() {
     Inter_700Bold,
   });
   const router = useRouter();
+  const handledNotificationIdRef = useRef<string>('');
 
   useEffect(() => {
     if (!fontsLoaded) return;
@@ -121,25 +499,83 @@ export default function RootLayout() {
 
   // Ask for push permission once on first launch and wire up tap-to-open-chat
   useEffect(() => {
-    requestNotificationPermission();
-    const sub = addNotificationResponseListener((data) => {
+    let mounted = true;
+    let sub: { remove: () => void } | null = null;
+
+    const handleNotificationTap = (data: Record<string, string>) => {
+      const notificationId = String(data.notificationId ?? '').trim();
+      if (notificationId && handledNotificationIdRef.current === notificationId) return;
+      if (notificationId) handledNotificationIdRef.current = notificationId;
+
+      const actionIdentifier = String(data.actionIdentifier ?? '').trim();
+      if (actionIdentifier === CALL_ACTION_DECLINE) return;
+
+      if (data.type === 'call_offer' && data.chatId && data.peerId) {
+        router.push({
+          pathname: '/call/[chatId]' as any,
+          params: {
+            chatId: data.chatId,
+            peerId: data.peerId,
+            peerName: data.peerName ?? 'Unknown',
+            peerAvatar: data.peerAvatar ?? '',
+            incoming: '1',
+            callId: data.callId ?? '',
+          },
+        });
+        return;
+      }
+
+      if (data.groupId) {
+        router.push({
+          pathname: '/chat/group/[id]' as any,
+          params: { id: data.groupId },
+        });
+        return;
+      }
+
       if (data.chatId) {
         router.push({
           pathname: '/chat/[id]' as any,
           params: {
-            id:          data.chatId,
-            peerId:      data.peerId,
-            peerName:    data.peerName,
-            peerAvatar:  data.peerAvatar ?? '',
-            peerKey:     data.peerKey    ?? '',
+            id: data.chatId,
+            peerId: data.peerId,
+            peerName: data.peerName,
+            peerAvatar: data.peerAvatar ?? '',
+            peerKey: data.peerKey ?? '',
           },
         });
       }
-    });
-    return () => sub.remove();
-  }, []);
+    };
 
-  // Don’t render until fonts are ready — prevents FOUT
+    const setupNotifications = async () => {
+      await configureNotificationRuntime();
+      await requestNotificationPermission();
+
+      const initialTap = await getLastNotificationResponseData();
+      if (initialTap && mounted) handleNotificationTap(initialTap);
+
+      const nextSub = await addNotificationResponseListener((data) => {
+        if (!mounted) return;
+        handleNotificationTap(data);
+      });
+
+      if (!mounted) {
+        nextSub.remove();
+        return;
+      }
+
+      sub = nextSub;
+    };
+
+    setupNotifications();
+
+    return () => {
+      mounted = false;
+      sub?.remove();
+    };
+  }, [router]);
+
+  // Don't render until fonts are ready — prevents FOUT
   if (!fontsLoaded) return null;
 
   return (
@@ -150,4 +586,3 @@ export default function RootLayout() {
     </SettingsProvider>
   );
 }
-

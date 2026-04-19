@@ -3,6 +3,7 @@ node_modules/
 
 # Expo
 .expo/
+.expo-shared/
 dist/
 web-build/
 expo-env.d.ts
@@ -13,8 +14,15 @@ expo-env.d.ts
 *.jks
 *.p8
 *.p12
+*.pfx
 *.key
+*.keystore
+*.crt
+*.cer
 *.mobileprovision
+google-services.json
+GoogleService-Info.plist
+credentials.json
 
 # Metro
 .metro-health-check*
@@ -23,6 +31,7 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+pnpm-debug.log*
 
 # macOS
 .DS_Store
@@ -31,6 +40,7 @@ yarn-error.*
 # env files
 .env
 .env.*
+.envrc
 !.env.example
 
 # typescript
@@ -45,6 +55,7 @@ app-example
 # Supabase Local
 /supabase/.temp/
 /supabase/.branch/
+supabase.tar.gz
 
 # Editor swap / backup files
 *.swp
@@ -59,3 +70,23 @@ Thumbs.db
 # Logs
 *.log
 logs/
+coverage/
+
+# Python local environments
+.venv/
+venv/
+
+# EAS / local build outputs
+*.apk
+*.aab
+eas-build-*.json
+
+# Root-level local exports and temp artifacts
+/nul
+/_doc_extract.txt
+/Document*.docx
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.heic

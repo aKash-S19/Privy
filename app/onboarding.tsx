@@ -9,28 +9,26 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useRef, useState } from 'react';
 import {
-  Dimensions,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
+    Dimensions,
+    NativeScrollEvent,
+    NativeSyntheticEvent,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
 } from 'react-native';
 import Animated, {
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring
+    interpolate,
+    useAnimatedStyle,
+    useSharedValue,
+    withSpring,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 const { width: SW } = Dimensions.get('window');
-const ND = Platform.OS !== 'web';
 
 export const ONBOARDING_KEY = 'privy_onboarded';
 
@@ -42,6 +40,7 @@ const SLIDES = [
     accent:   '#A78BFA',
     title:    'End-to-End Encrypted',
     sub:      'Every message is encrypted on your device. Not even we can read your conversations.',
+    badge:    'Military-grade AES-256',
   },
   {
     icon:     'emoticon-outline' as const,
@@ -66,6 +65,14 @@ const SLIDES = [
     title:    'Private Friend Network',
     sub:      'Add friends by username. No phone number, no email. Your identity stays in your hands.',
     badge:    'Pseudonymous',
+  },
+  {
+    icon:     'lightning-bolt-outline' as const,
+    gradient: ['#EF4444', '#FCA5A5'],
+    accent:   '#EF4444',
+    title:    'Realtime & Reliable',
+    sub:      'Instant delivery, typing indicators, read receipts and push notifications — all live.',
+    badge:    'Supabase Realtime',
   },
 ] as const;
 
@@ -109,12 +116,10 @@ function SlideCard({
       </View>
 
       {/* Badge pill */}
-      {'badge' in slide && slide.badge ? (
-        <View style={[s.badge, { backgroundColor: slide.accent + '22', borderColor: slide.accent + '55' }]}>
-          <View style={[s.badgeDot, { backgroundColor: slide.accent }]} />
-          <Text style={[s.badgeText, { color: slide.accent }]}>{slide.badge}</Text>
-        </View>
-      ) : null}
+      <View style={[s.badge, { backgroundColor: slide.accent + '22', borderColor: slide.accent + '55' }]}>
+        <View style={[s.badgeDot, { backgroundColor: slide.accent }]} />
+        <Text style={[s.badgeText, { color: slide.accent }]}>{slide.badge}</Text>
+      </View>
 
       {/* Title */}
       <Text style={[s.title, { color: isDark ? '#F9FAFB' : '#111827' }]}>
@@ -164,18 +169,18 @@ export default function OnboardingScreen() {
     setPage(Math.round(x / SW));
   }, [scrollX]);
 
+  const handleGetStarted = useCallback(async () => {
+    await SecureStore.setItemAsync(ONBOARDING_KEY, '1');
+    router.replace('/auth');
+  }, []);
+
   const goNext = useCallback(() => {
     if (page < N - 1) {
       scrollRef.current?.scrollTo({ x: (page + 1) * SW, animated: true });
     } else {
       handleGetStarted();
     }
-  }, [page]);
-
-  const handleGetStarted = useCallback(async () => {
-    await SecureStore.setItemAsync(ONBOARDING_KEY, '1');
-    router.replace('/auth');
-  }, []);
+  }, [handleGetStarted, page]);
 
   const btnStyle = useAnimatedStyle(() => ({
     transform: [{ scale: btnScale.value }],

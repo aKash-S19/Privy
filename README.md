@@ -8,51 +8,96 @@ Contribution note: land small docs/chore updates on main regularly to keep the G
 
 ## Changelog
 
-### Mar 20 2026 — Group Chat Launch, Stability Fixes, and UI Refresh
+### Apr 19 2026 — Major Calls Update, Group Reliability & APK Readiness
 
-#### Group Chat Backend (Supabase + Edge Function)
-- Added full group chat foundation: groups, memberships, roles, bans, invite links, join requests, key envelopes, key rotations, group messages, receipts, typing presence, and reports
-- Extended `supabase/functions/auth/index.ts` with group actions:
-	- create/list groups
-	- create/join invites and join-request approval flow
-	- member management (add, set role, mute, kick, ban)
-	- group settings (announcement mode, invite approval, forwarding restriction)
-	- rotate group key, fetch group state, send/get messages, typing and receipt updates, report user
-- Added schema-cache resiliency:
-	- explicit `reload-schema-cache` edge action
-	- best-effort schema reload calls before group actions
-	- retry path for transient PostgREST cache misses
+- Added full 1:1 call signaling pipeline through edge actions:
+	- `send-call-signal`, `get-call-signals`, `get-pending-call-signals`, `ack-call-signals`
+	- encrypted offer/answer/ICE payload relay and reachability checks before ringing
+- Added call UI and call entry flow:
+	- dedicated call route/screen (`app/call/[chatId].tsx`)
+	- in-chat call button and incoming-call accept/decline prompts
+	- call timeout/end handling and call event logging
+- Added verified call history events in chat:
+	- backend action `log-call-event` stores call event markers (`application/x-privy-call-event`)
+	- direct chat and chats list now render human-readable call previews instead of raw JSON payloads
+- Upgraded incoming call notifications:
+	- call category/actions, ringtone-oriented Android channel audio usage, sticky/time-sensitive behavior
+	- tap handling supports call routing and decline action filtering
+- Improved delivery speed and backend efficiency:
+	- faster polling intervals for direct chat, group chat, chats list and global notification bridge
+	- `get-chats`/`get-groups-overview` optimized with bounded recent scans + fallback latest-message lookup
+	- unread-count work for push metadata parallelized in direct/group send flows
+- Added push token lifecycle support and dispatch hardening:
+	- register/unregister device push token actions
+	- token validation, deduplication, inactive-token cleanup (`DeviceNotRegistered`)
+- Fixed group key recovery and group open reliability:
+	- auto-rekey fallback for admin on group-key decrypt mismatch (`invalid ghash tag`)
+	- admin re-wrap sync for all members to heal stale key rows
+	- added transient gateway retry/fallback handling for group context fetch
+- App identity/build updates:
+	- mobile app display name now `Privy`
+	- added EAS `apk` profile for installable Android builds
 
-#### New/Updated Migrations
-- `20260320090000_group_chat_foundation.sql`
-- `20260320093000_reload_postgrest_schema.sql`
-- `20260320094000_reload_schema_cache_fn.sql`
-- `20260320101000_group_tables_backfill.sql`
+### Apr 19 2026 — Groups, Notifications, Privacy Controls & Git Hygiene
 
-#### Client Group E2EE and Reliability
-- Added `lib/group-e2ee.ts` for group key generation, envelope encryption/decryption, and local key persistence
-- Fixed SecureStore key format compatibility on Android (only allowed key characters)
-- Added safe fallback handling to avoid SecureStore crashes from legacy/invalid key names
-- Enhanced `lib/supabase.ts` auth-function caller with schema-cache aware retry + reload fallback
+- Added full group chat surfaces and navigation:
+	- new groups tab UI (`app/(tabs)/groups.tsx`)
+	- group chat screen (`app/chat/group/[id].tsx`)
+	- group info/admin screen (`app/chat/group/info.tsx`)
+- Added admin/member group lifecycle controls:
+	- add/remove members, promote/demote role
+	- archive/delete group and permanent destroy group actions
+	- join via invite code and invite-link generation
+- Added group media management:
+	- group avatar/banner upload via signed Supabase storage URLs
+	- group context and overview APIs for list/detail rendering
+- Improved app-wide notification behavior:
+	- centralized direct/group message notification pipeline
+	- route-aware duplicate suppression when active chat is open
+	- Expo Go-safe notification fallback handling in `lib/notifications.ts`
+- Expanded user settings and sync:
+	- notification sound + group mute controls
+	- chat customizations and server-sync support for settings
+- Strengthened auth/session handling in edge function:
+	- PBKDF2-based PIN hashing and legacy-hash upgrade path
+	- hashed session/device identifiers and stricter payload validation
+	- wider authenticated action coverage for groups/chats/settings
+- Added and organized Supabase migrations for groups, settings, invite links, username history, auth hardening, and group-key table repair under `supabase/migrations/`
+- Updated `.gitignore` to exclude local-only artifacts and confidential/noise files while keeping source and migrations tracked
 
-#### Group UI (Modernized)
-- Added `app/(tabs)/groups.tsx` with:
-	- modern hero section and quick action pills
-	- create-group and join-by-link flows
-	- improved group list rows, empty states, and unread indicators
-- Added `app/group/[id].tsx` with:
-	- cleaner messenger-style header and chat layout
-	- refined bubble styling and timestamps
-	- keyboard-safe multiline composer
-	- collapsible admin tools panel
-- Routing updates:
-	- groups tab in `app/(tabs)/_layout.tsx`
-	- group chat stack screen in `app/_layout.tsx`
+### Apr 18 2026 — Production Security Hardening
 
-#### Operational Notes
-- Supabase migrations pushed and `auth` function deployed successfully
-- For Expo cache reset + tunnel startup, use:
-	- `npx expo start -c --tunnel`
+- Moved active group/request data flows to edge-function actions (client no longer performs direct `public.*` table reads/writes for these paths)
+- Replaced direct Postgres changefeed dependencies with secure polling + broadcast-only events where needed
+- Added new auth edge actions for:
+	- group overview/detail/member management
+	- group request moderation (accept/decline/report)
+	- group key bootstrap/upsert for E2EE distribution
+	- incremental message polling support
+- Added migration `20260418000002_lock_active_app_tables.sql` to enforce:
+	- `ENABLE RLS` + `FORCE RLS`
+	- revoked `anon`/`authenticated` table privileges on active app tables
+	- `service_role_all` policy for edge-function access
+- Removed hardcoded Supabase defaults from `app.config.js`; release builds now require env vars
+- Set Android hardening flags in `app.json`:
+	- `allowBackup: false`
+	- `usesCleartextTraffic: false`
+
+### Release Checklist (Play Store)
+
+1. Set env vars (`SUPABASE_URL`, `SUPABASE_ANON_KEY`) for build/runtime config.
+2. Push migrations to production:
+	 - `npx supabase db push --yes`
+3. Deploy edge auth function:
+	 - `npx supabase functions deploy auth --project-ref <project-ref> --no-verify-jwt`
+4. Run smoke tests for register/login, direct chat send, group chat send, request accept/decline/report.
+5. Build signed Android release via EAS and submit to Play Console.
+
+### Quick APK Build (Internal Testing)
+
+1. Ensure EAS auth is active: `npx eas whoami`
+2. Build installable APK: `npx eas build -p android --profile apk`
+3. Download the APK from the build URL shown by EAS and install on device.
 
 ### Mar 7 2026 — E2EE Chat, File Sharing, Onboarding & More
 
